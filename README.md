@@ -1,60 +1,95 @@
-# restful-mailer
+# RESTful Mailer - Arquitetura e Design
 
-This project uses Quarkus, the Supersonic Subatomic Java Framework.
+Esta é a implementação de um serviço RESTful para envio de e-mails, baseado em Quarkus. Ela utiliza o `Vertx MailerClient` para envio de e-mails e o `GreenMail` para testes automatizados.
 
-If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
+---
 
-## Running the application in dev mode
+## 1. Arquitetura Hexagonal e Limpa
 
-You can run your application in dev mode that enables live coding using:
+### Organização de Pacotes
+A organização do código segue uma estrutura modular e separada, promovendo independência entre camadas:
+- **`domain`**: Contém as entidades centrais (`Mail`, `Attachment`, `MailServerConnection`), responsáveis por encapsular as regras de negócio.
+- **`application`**: Define as interfaces de serviço (`MailService`) para a lógica de aplicação.
+- **`adapter`**: Implementa as interfaces e interage com sistemas externos.
+    - **`mailer`**: Adapta as funções de envio de e-mails utilizando o `Vertx MailerClient`.
+    - **`rest`**: Exponibiliza uma API REST com endpoints como `/mail` para envio de e-mails.
 
-```shell script
-./mvnw quarkus:dev
+### Interações Entre Camadas
+- A camada **`rest`** injeta a interface **`MailService`**, que é implementada pelo adaptador na camada **`mailer`**.
+- As entidades no pacote **`domain`** são usadas diretamente em todas as camadas, evitando dependências desnecessárias entre implementações específicas.
+
+#### Exemplo: Fluxo de Envio de E-mail
+1. O **`MailerResource`** recebe um POST com um `MailRequest`.
+2. O **`MailService`** transforma os dados e delega o envio à implementação do **`MailServiceImpl`**.
+3. O adaptador **`VertxMailAdapter`** cria a configuração e os objetos necessários para o envio via `Vertx MailerClient`.
+
+---
+
+## 2. Utilização do `Vertx MailerClient`
+
+O `Vertx MailerClient` é integrado para gerenciar a comunicação com servidores SMTP. Ele é configurado dinamicamente baseado em dados fornecidos em runtime.
+
+### Configuração
+No adaptador **`VertxMailAdapter`**, é criado um objeto `MailConfig`:
+```java
+MailConfig createMailConfig(MailServerConnection mailServerConnection) {
+    return new MailConfig()
+            .setHostname(mailServerConnection.getHostname())
+            .setPort(mailServerConnection.getPort())
+            .setUsername(mailServerConnection.getUsername())
+            .setPassword(mailServerConnection.getPassword());
+}
 ```
 
-> **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
-
-## Packaging and running the application
-
-The application can be packaged using:
-
-```shell script
-./mvnw package
+### Envio de E-mails
+A classe MailServiceImpl utiliza o MailClient para enviar e-mails:
+```java
+@Override
+public void send(MailServerConnection mailServerConnection, Mail... mail) {
+    MailClient mailClient = createMailClient(mailServerConnection);
+    for (Mail m : mail) {
+        mailClient.sendMail(vertxMailAdapter.createMailMessage(m))
+                .onFailure(e -> {
+                    LOGGER.error("Failed to send mail", e);
+                    mailClient.close();
+                    throw new RuntimeException(e);
+                });
+    }
+}
 ```
 
-It produces the `quarkus-run.jar` file in the `target/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `target/quarkus-app/lib/` directory.
+## 2. Utilização do `GreenMail` para Testes
 
-The application is now runnable using `java -jar target/quarkus-app/quarkus-run.jar`.
+O `GreenMail` é usado para simular um servidor SMTP em testes automatizados, permitindo verificar o envio de e-mails sem interagir com um servidor externo.
 
-If you want to build an _über-jar_, execute the following command:
-
-```shell script
-./mvnw package -Dquarkus.package.jar.type=uber-jar
+### Configuração do Servidor
+A classe `MailServer` gerencia a configuração e execução:
+```java
+static {
+    greenMail = new GreenMail(new ServerSetup(PORT, HOST, ServerSetup.PROTOCOL_SMTP));
+    addUser(username, password);
+}
 ```
 
-The application, packaged as an _über-jar_, is now runnable using `java -jar target/*-runner.jar`.
+- **Métodos principais:**
+    - `start()`: Inicia o servidor.
+    - `stop()`: Para o servidor.
+    - `clearInboxes()`: Remove e-mails armazenados.
 
-## Creating a native executable
+### Exemplo de Teste Automatizado
 
-You can create a native executable using:
+Na classe MailerResourceTest, o envio é testado verificando a chegada de e-mails simulados:
+```java
+@Test
+void testSendMail() {
+    given()
+        .contentType(ContentType.JSON)
+        .body(MailScenario.createDefaultRequest())
+        .when()
+        .post("/mail")
+        .then()
+        .statusCode(200);
 
-```shell script
-./mvnw package -Dnative
+    Assertions.assertTrue(MailServer.awaitIncomingEmail(1));
+}
 ```
-
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
-
-```shell script
-./mvnw package -Dnative -Dquarkus.native.container-build=true
-```
-
-You can then execute your native executable with: `./target/restful-mailer-1.0.0-SNAPSHOT-runner`
-
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/maven-tooling>.
-
-## Related Guides
-
-- Qute ([guide](https://quarkus.io/guides/qute)): Offer templating support for web, email, etc in a build time, type-safe way
-- REST ([guide](https://quarkus.io/guides/rest)): A Jakarta REST implementation utilizing build time processing and Vert.x. This extension is not compatible with the quarkus-resteasy extension, or any of the extensions that depend on it.
-- Mailer ([guide](https://quarkus.io/guides/mailer)): Send emails
